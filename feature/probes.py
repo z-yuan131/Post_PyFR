@@ -78,18 +78,9 @@ class Probes(Base):
         f.close()
         print('No. of mpi rank: ', rank, ', Number of points', len(self.pts))
 
-    def rot_map(self, aoa):
-        from math import pi
-        self.AoA = aoa
-        rot_map = np.array([[np.cos(self.AoA/180*pi),np.sin(self.AoA/180*pi),0],
-                [-np.sin(self.AoA/180*pi), np.cos(self.AoA/180*pi), 0],
-                [0,0,1]])
-        return rot_map[:self.ndims,:self.ndims]
-
-
     def preprocpts_ptswise(self):
         if rank == 0:
-            f = h5py.File('./data/spanfft_Re200k_refined/spanproc_for_interp.s','r')
+            f = h5py.File(f'{self.nmsh_dir}','r')
             mm = np.array(f['mesh'])
             f.close()
 
@@ -107,7 +98,7 @@ class Probes(Base):
         else:
             self.pts = mm[rank*npts_rank:(rank+1)*npts_rank]
 
-        self.kshp = list([('spt_pts_p0', (len(pts),2,3))])
+        self.kshp = list([('spt_pts_p0', (len(pts),2,self.ndims))])
         print('No. of mpi rank: ', rank, ', Number of points', len(self.pts))
 
 

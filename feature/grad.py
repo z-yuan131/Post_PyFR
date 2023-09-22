@@ -103,7 +103,7 @@ class Gradient(Region):
                 f[f'{etype}'] = array[etype]
             f.close()
         else:
-            f = h5py.File(f'{self.dir}/grad.m', 'w')
+            f = h5py.File(f'{self.dir}/grad_mesh.s', 'w')
             for etype in array:
                 f[f'{etype}'] = array[etype]
             f.close()

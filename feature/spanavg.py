@@ -21,20 +21,14 @@ class SpanavgBase(Region):
                                 n**2*(n-1), (n-1)*(n**2+1), n**3-n, n**3-1])}
 
         # Get indices of results we need
+        if nfft <= 0:
+            raise RuntimeError('nfft has to be equal or larger than 1.')
         self.nfft = np.arange(nfft)
 
         # The box that elements are in
         self.box = icfg.getliteral(fname, 'box', None)
 
         self.emap = lambda x: {(x+1)**2: 'quad', (x+1)*(x+2)/2: 'tri'}
-
-    def rot_map(self):
-        from math import pi
-        self.AoA = 3
-        rot_map = np.array([[np.cos(self.AoA/180*pi),np.sin(self.AoA/180*pi),0],
-                [-np.sin(self.AoA/180*pi), np.cos(self.AoA/180*pi), 0],
-                [0,0,1]])
-        return rot_map[:self.ndims,:self.ndims]
 
     def _get_box(self):
         if self.box and self.layers > 0:
@@ -86,36 +80,6 @@ class SpanavgBase(Region):
 
             ptsinfo = self._resort_mesh(mesh, gbox, lbox, cmesh)
 
-            #"""
-            import matplotlib.pyplot as plt
-            plt.figure()
-            for id, info in ptsinfo.items():
-                pts_t = []
-                for erank, idx, ids in info:
-                    pts = mesh[erank][:,idx].reshape(-1, self.ndims)
-                    Nptz = len(idx)*(self.order + 1)
-                    #print(len(ids)/Nptz)
-                    pts = pts[ids].reshape(Nptz, -1, self.ndims, order = 'F')
-                    pts_t.append(pts)
-                pts = np.mean(np.concatenate(pts_t, axis = 0),axis = 0)
-                #pts = np.concatenate(pts_t, axis = 1)
-                plt.plot(pts[:,0],pts[:,1],'.')
-            plt.figure()
-            for id, info in ptsinfo.items():
-                pts_t = []
-                for erank, idx, ids in info:
-                    pts = mesh[erank][:,idx].reshape(-1, self.ndims)
-                    Nptz = len(idx)*(self.order + 1)
-                    #print(len(ids)/Nptz)
-                    pts = pts[ids].reshape(Nptz, -1, self.ndims, order = 'F')
-                    pts_t.append(pts)
-                pts = np.mean(np.concatenate(pts_t, axis = 0),axis = 0)
-                #pts = np.concatenate(pts_t, axis = 1)
-                plt.plot(pts[:,0],pts[:,-1],'.')
-            plt.show()
-            print(np.max(pts[:,-1]),np.min(pts[:,-1]))
-            #"""
-
             self._cachedfile(ptsinfo, lookup)
             return 0
         else:
@@ -128,7 +92,7 @@ class SpanavgBase(Region):
 
                 if rank == 0:
                     mesh = self._load_mesh(lookup)
-                    if np.max(self.nfft) == 0:
+                    if np.max(self.nfft) == 1:
                         spts = self._avg_proc(ptsinfo, mesh, self.ndims)
                     else:
                         spts, index = self._fft_proc(ptsinfo, mesh, self.ndims)
@@ -138,21 +102,20 @@ class SpanavgBase(Region):
                 else:
                     index = None
 
-                if np.max(self.nfft) != 0:
+                if np.max(self.nfft) != 1:
                     index = comm.bcast(index, root = 0)
 
                 soln_op = self._get_op_soln(lookup)
                 # Get time series for each rank
                 time = self.get_time_series_mpi(rank, size)
-                print(rank, time)
                 for t in time:
                     soln = self._load_soln(t, lookup, soln_op)
-                    if np.max(self.nfft) == 0:
+                    if np.max(self.nfft) == 1:
                         # Average subroutine
-                        soln = self._avg_proc(ptsinfo, soln, self.nvars)
+                        soln = self._avg_proc(ptsinfo, soln, self.nvars - 1)
                     else:
                         # FFT subroutine
-                        soln, _ = self._fft_proc(ptsinfo, soln, self.nvars, index)
+                        soln, _ = self._fft_proc(ptsinfo, soln, self.nvars - 1, index)
                         # Average boundary surface and do FFT
                         soln = self.ebcavgfft(soln)
 
@@ -163,29 +126,33 @@ class SpanavgBase(Region):
 
                 mesh = self._load_mesh(lookup)
 
-                if np.max(self.nfft) == 0:
+                if np.max(self.nfft) == 1:
                     spts = self._avg_proc(ptsinfo, mesh, self.ndims)
                 else:
                     spts, index = self._fft_proc(ptsinfo, mesh, self.ndims)
 
+                self._get_parallel_info(spts)
+                self._get_array_shape()
                 self._flash_to_disk_parallel(spts, 'mesh')
                 del mesh, spts
-
 
                 soln_op = self._get_op_soln(lookup)
                 for t in self.time:
                     soln = self._load_soln(t, lookup, soln_op)
-                    if np.max(self.nfft) == 0:
+                    if np.max(self.nfft) == 1:
                         # Average subroutine
-                        soln = self._avg_proc(ptsinfo, soln, self.nvars)
+                        soln = self._avg_proc(ptsinfo, soln, self.nvars - 1)
                     else:
                         # FFT subroutine
-                        soln, _ = self._fft_proc(ptsinfo, soln, self.nvars, index)
+                        soln, _ = self._fft_proc(ptsinfo, soln, self.nvars - 1, index)
                         # Average boundary surface and do FFT
                         soln = self.ebcavgfft(soln)
 
-                    self._flash_to_disk_parallel(soln, t)
+                        if t == self.time[0]:
+                            self._get_parallel_info(soln)
+                            self._get_array_shape(t)
 
+                    self._flash_to_disk_parallel(soln, t)
 
     def _cachedfile(self, ptsinfo = [], lookup = []):
         if lookup != []:
@@ -269,6 +236,35 @@ class SpanavgBase(Region):
         # Format lookup and return
         return info, [v for erank, *v in lookup2]
 
+    def _get_parallel_info(self, array):
+        comm, rank, root = get_comm_rank_root()
+
+        info = [(etype, soln.shape) for etype, soln in array.items()]
+
+        # Distribute the data info to all ranks
+        ginfo = comm.allgather(info)
+        minfo = defaultdict(list)
+        for info in ginfo:
+            for etype, shape in info:
+                minfo[etype].append(shape[1])
+
+        self.ginfo = {k: np.cumsum(v) for k, v in minfo.items()}
+
+    def _get_array_shape(self, t = []):
+        n = self.order + 1
+        npts = {'quad': n**2, 'tri': int(n*(n+1)/2)}
+
+        self.shape = {}
+        for k in self.ginfo:
+            if t:
+                self.shape[k] = (len(self.nfft), self.ginfo[k][-1], npts[k], self.nvars-1)
+            else:
+                self.shape[k] = (npts[k], self.ginfo[k][-1], self.ndims)
+
+        if np.max(self.nfft) == 1 or not t:
+            self.dty = np.float64
+        else:
+            self.dty = np.complex128
 
     def _flash_to_disk(self, array, t):
         f = h5py.File(f'{self.dir}/spanproc_{t}.s', 'w')
@@ -279,22 +275,38 @@ class SpanavgBase(Region):
     def _flash_to_disk_parallel(self, array, t):
         comm, rank, root = get_comm_rank_root()
         size = comm.Get_size()
+
         # Try to use parallel HDF5
         try:
             f = h5py.File(f'{self.dir}/spanproc_{t}.s', 'w', driver='mpio', comm=comm)
+            # Parallel HDF5 requires that data sets be created collectively
+            for name in self.ginfo:
+                f.create_dataset(name, self.shape[name], dtype = self.dty)
 
             for etype, soln in array.items():
-                f[f'{etype}_p{rank}'] = soln
+                fna = f[etype]
+                if rank == 0:
+                    fna[:,:self.ginfo[etype][rank]] = soln
+                else:
+                    fna[:,self.ginfo[etype][rank-1]:self.ginfo[etype][rank]] = soln
+            comm.Barrier()
+            f.close()
         except:
             for erank in range(size):
                 if erank == rank:
                     if rank == 0:
                         f = h5py.File(f'{self.dir}/spanproc_{t}.s', 'w')
+                        for name in self.ginfo:
+                            f.create_dataset(name, self.shape[name], dtype = self.dty)
                     else:
                         f = h5py.File(f'{self.dir}/spanproc_{t}.s', 'a')
 
                     for etype, soln in array.items():
-                        f[f'{etype}_p{rank}'] = soln
+                        fna = f[etype]
+                        if rank == 0:
+                            fna[:,:self.ginfo[etype][rank]] = soln
+                        else:
+                            fna[:,self.ginfo[etype][rank-1]:self.ginfo[etype][rank]] = soln
                     f.close()
                 comm.Barrier()
 
@@ -330,7 +342,7 @@ class SpanavgBase(Region):
             kk = f'{self.dataprefix}_{etype}_{part}'
 
             sln = np.array(f[kk])[...,idx]
-            sln = np.einsum('ij, jkl -> ilk', soln_op[etype], sln)
+            sln = np.einsum('ij, jkl -> ilk', soln_op[etype], sln[:,[0,1,2,4]])
             sln = np.array(self._con_to_pri(sln.swapaxes(0,-1))).swapaxes(0,-1)
             soln.append(sln)
         f.close()
@@ -420,6 +432,41 @@ class SpanavgBase(Region):
 
         return {k: np.array(v).swapaxes(0,1) for k,v in spts.items()}
 
+    def _avg_mesh(self, ptsinfo, mesh):
+        spts = defaultdict(list)
+        for etype, einfo in enumerate(ptsinfo):
+            for id, info in einfo.items():
+                ele = []
+                for inf in info:
+                    pt = []
+                    for erank, idx, ids in inf:
+                        msh = mesh[erank][:,idx].reshape(-1,self.ndims)
+                        pt.append(msh[ids])
+                    #print(len(np.concatenate(pt, axis = 0)))
+                    pt = np.mean(np.concatenate(pt, axis = 0), axis = 0)
+                    ele.append(pt)
+                spts[etype].append(np.array(ele))
+
+        return [np.array(v).swapaxes(0,1) for k,v in spts.items()]
+
+    def _avg_soln(self, ptsinfo, soln):
+        spts = defaultdict(list)
+        for etype, einfo in enumerate(ptsinfo):
+            for id, info in einfo.items():
+                ele = []
+                for inf in info:
+                    pt = []
+                    for erank, idx, ids in inf:
+                        msh = soln[erank][:,idx].reshape(-1,self.nvars)
+                        pt.append(msh[ids])
+                    #print(len(np.concatenate(pt, axis = 0)))
+                    pt = np.mean(np.concatenate(pt, axis = 0), axis = 0)
+                    ele.append(pt)
+                spts[etype].append(np.array(ele))
+
+        return [np.array(v).swapaxes(0,1) for k,v in spts.items()]
+
+
     def _gen_bounding_box(self, mesh):
         # In this section, bounding boxes will be created
         gbox, lbox = [], []
@@ -467,7 +514,6 @@ class SpanavgBase(Region):
                 ids = np.where(dist < self.tol)[0]
                 idx, msh = idx[ids], msh[:,ids]
 
-
                 if len(idx) > 0:
                     # Reorder element points
                     npts, neles, ndims = msh.shape
@@ -479,7 +525,6 @@ class SpanavgBase(Region):
                         ids = np.argsort(msh[:,-1])[:Nptf]
                         fpts = sorted(msh[ids,:2], key=lambda k: [k[1], k[0]])
                         ref_face[id] = fpts
-
                     else:
                         fpts = ref_face[id]
 
@@ -492,12 +537,21 @@ class SpanavgBase(Region):
 
                             if tol > 1.5e-2 or len(idd) > Nptz:
                                 print(tol, len(idd), Nptz)
+                                import matplotlib.pyplot as plt
+                                plt.figure()
+                                plt.plot(msh[:,0],msh[:,1],'.')
+                                afpts = np.array(fpts)
+                                plt.plot(afpts[:,0],afpts[:,1],'.')
+                                plt.show()
                                 raise RuntimeError
                         ids.append(idd)
                     ids = np.concatenate(ids, axis = 0)
 
                     oinfo[id].append((erank, idx, ids))
         return oinfo
+
+
+
 
     def _local_check(self, lbox, pts, eid):
         ptsinfo = defaultdict(list)
@@ -523,6 +577,7 @@ class SpanavgBase(Region):
             if id not in ptsinfo:
                 raise RuntimeError
         return ptsinfo
+
 
     def _global_check(self, gbox, pts):
         eid = defaultdict(list)

@@ -79,16 +79,17 @@ class Probes(Base):
         print('No. of mpi rank: ', rank, ', Number of points', len(self.pts))
 
     def preprocpts_ptswise(self):
+        comm, rank, root = get_comm_rank_root()
         if rank == 0:
             f = h5py.File(f'{self.nmsh_dir}','r')
-            mm = np.array(f['mesh'])
+            pts = np.array(f['mesh'])
             f.close()
 
         else:
-            mm = None
+            pts = None
 
         # Boardcast mm array
-        mm = comm.bcast(mm, root=0)
+        pts = comm.bcast(pts, root=0)
 
         size = comm.Get_size()
         # Let each rank get a batch of points
@@ -552,7 +553,7 @@ class Probes(Base):
                     pidinfo[erank].append((pid, eidx[ide]))
 
         # Sort by element type to increase stability
-        eidsort = {'hex': 0, 'pyr': 1, 'pri': 2, 'tet': 3}
+        eidsort = {'hex': 0, 'pyr': 1, 'pri': 2, 'tet': 3, 'quad': 0, 'tet': 1}
         eidrank = [(eidsort[lookup[erank].split('_')[1]], erank) for erank in eleinfo]
         eidrank.sort()
         eleinfo = {erank: eleinfo[erank] for id, erank in eidrank}

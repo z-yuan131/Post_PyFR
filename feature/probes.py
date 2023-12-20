@@ -752,7 +752,7 @@ class Probes(Base):
 
         pinfo = []
         for erank, inf in ptsinfo.items():
-            if len(inf) > 0:
+            if len(inf[0]) > 0:
                 pid, idi = inf
                 spts, tlocs, ipts, iplocs = zip(*eleinfo[erank])
                 spts, iplocs = np.array(spts).swapaxes(0,1), np.array(iplocs)

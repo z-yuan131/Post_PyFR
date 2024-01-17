@@ -39,6 +39,7 @@ class Probes(Base):
         self.mode = icfg.get(fname, 'mode', 'mesh')
         self.porder = icfg.getint(fname, 'porder', self.order)
         self.nmsh_dir = icfg.get(fname, 'new-mesh-dir', None)
+        self.method = icfg.get(fname, 'method', 'Standard')
 
         if not self.nmsh_dir:
             raise ValueError('Directory and file name is needed for the target mesh')
@@ -106,7 +107,6 @@ class Probes(Base):
 
         self.kshp = list([('spt_pts_p0', (len(pts),2,self.ndims))])
         print('No. of mpi rank: ', rank, ', Number of points', len(self.pts))
-
 
     def main_proc(self):
         # Prepare for MPI process
@@ -269,18 +269,6 @@ class Probes(Base):
         f.close()
         return {k: np.concatenate(v, axis = -1) for k,v in soln.items()}
 
-    def dump_to_h5_ptswise(self, var, time = []):
-        if len(time) == 0:
-            f = h5py.File(f'{self.dir}/interp_mesh.pyfrs','w')
-            f['mesh'] = var
-            f.close()
-        else:
-            f = h5py.File(f'{self.dir}/interp_{time}.pyfrs','w')
-            f[f'soln'] = var
-            f.close()
-
-        #raise RuntimeError
-
     def dump_to_h5_ptswise_serial_time(self, var, t):
         comm, rank, root = get_comm_rank_root()
         size = comm.Get_size()
@@ -381,8 +369,6 @@ class Probes(Base):
             _, etype, part = lookup[erank].split('_')
 
             npts = len(self.soln[f'soln_{etype}_{part}'])
-            #quadr = self.cfg.get(f'solver-elements-{etype}', 'soln-pts')
-            #upts = get_quadrule(etype, quadr, npts).pts
             upts = get_quadrule(etype, self.qrule_map_gll[etype], npts).pts
 
             ubasis = get_polybasis(etype, self.order + 1, upts)
@@ -612,7 +598,7 @@ class Probes(Base):
         for each iteration."""
         indexp = [*range(len(kplocs))]
         # Apply maximum ten iterations of Newton's method
-        for k in range(10):
+        for k in range(20):
             # Get Jacobian operators
             jac_ops = ubasis.jac_nodal_basis_at(ktlocs)
             # Solve from ploc to tloc
@@ -631,7 +617,7 @@ class Probes(Base):
             indexp = list(set(indexp) - set(index))
 
             print('iteration number:', k, ', Num pts left:', len(indexp),
-                                            ', max distance:', np.max(kdists))
+                                ', max distance:', np.max(kdists), flush = True)
 
             if len(index) != 0:
                 oplocs[index], otlocs[index] = kplocs[index], ktlocs[index]
@@ -708,6 +694,7 @@ class Probes(Base):
                         pinfo[p]['tol'] = True
                         pinfo[p]['dp'] = d
                         idi[p] = id
+                    #pinfo[p]['tol'] |= val < tol
 
                     # Update the minimum physical distance
                     if pinfo[p]['tol']:
@@ -774,7 +761,7 @@ class Probes(Base):
         if etype in ['hex', 'quad']:
             nit = 1
         else:
-            nit = 2
+            nit = 1
         for n in range(nit):
             # Get Jacobian operators
             jac_ops = sbasis.jac_nodal_basis_at(ktlocs)
@@ -795,6 +782,7 @@ class Probes(Base):
             tol = 1e-10
         else:
             tol = 1e-8
+
         # Get a point on the surface
         cls = subclass_where(Probes, name=basis.name)
         fc, norm = cls.face_center()
@@ -802,8 +790,8 @@ class Probes(Base):
         tlocs = tlocs[:,None,:] - fc
         tlocs = tlocs/np.linalg.norm(tlocs, axis = -1)[:,:,None]
         inner = np.einsum('ijk,jk -> ij', tlocs, np.array(norm))
-
         return np.max(inner, axis = 1), np.max(abs(dp), axis = 1)
+
 
     def _local_check(self, pid, lbox, lookup):
         # Get the local bounding box for each point

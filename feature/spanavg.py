@@ -92,7 +92,7 @@ class SpanavgBase(Region):
 
                 if rank == 0:
                     mesh = self._load_mesh(lookup)
-                    if np.max(self.nfft) == 1:
+                    if np.max(self.nfft) == 0:
                         spts = self._avg_proc(ptsinfo, mesh, self.ndims)
                     else:
                         spts, index = self._fft_proc(ptsinfo, mesh, self.ndims)
@@ -102,7 +102,7 @@ class SpanavgBase(Region):
                 else:
                     index = None
 
-                if np.max(self.nfft) != 1:
+                if np.max(self.nfft) != 0:
                     index = comm.bcast(index, root = 0)
 
                 soln_op = self._get_op_soln(lookup)
@@ -110,7 +110,7 @@ class SpanavgBase(Region):
                 time = self.get_time_series_mpi(rank, size)
                 for t in time:
                     soln = self._load_soln(t, lookup, soln_op)
-                    if np.max(self.nfft) == 1:
+                    if np.max(self.nfft) == 0:
                         # Average subroutine
                         soln = self._avg_proc(ptsinfo, soln, self.nvars - 1)
                     else:
@@ -126,7 +126,7 @@ class SpanavgBase(Region):
 
                 mesh = self._load_mesh(lookup)
 
-                if np.max(self.nfft) == 1:
+                if np.max(self.nfft) == 0:
                     spts = self._avg_proc(ptsinfo, mesh, self.ndims)
                 else:
                     spts, index = self._fft_proc(ptsinfo, mesh, self.ndims)
@@ -139,7 +139,7 @@ class SpanavgBase(Region):
                 soln_op = self._get_op_soln(lookup)
                 for t in self.time:
                     soln = self._load_soln(t, lookup, soln_op)
-                    if np.max(self.nfft) == 1:
+                    if np.max(self.nfft) == 0:
                         # Average subroutine
                         soln = self._avg_proc(ptsinfo, soln, self.nvars - 1)
                     else:
@@ -257,11 +257,14 @@ class SpanavgBase(Region):
         self.shape = {}
         for k in self.ginfo:
             if t:
-                self.shape[k] = (len(self.nfft), self.ginfo[k][-1], npts[k], self.nvars-1)
+                if np.max(self.nfft) == 0:
+                    self.shape[k] = (npts[k], self.ginfo[k][-1], self.nvars-1)
+                else:
+                    self.shape[k] = (len(self.nfft), self.ginfo[k][-1], npts[k], self.nvars-1)
             else:
                 self.shape[k] = (npts[k], self.ginfo[k][-1], self.ndims)
 
-        if np.max(self.nfft) == 1 or not t:
+        if np.max(self.nfft) == 0 or not t:
             self.dty = np.float64
         else:
             self.dty = np.complex128

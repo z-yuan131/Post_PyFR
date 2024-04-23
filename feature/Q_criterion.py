@@ -29,6 +29,14 @@ class Q_criterion(Gradient):
         # The box that elements are in
         self.box = icfg.getliteral(fname, 'box', [])
 
+        # Q-criterion range
+        self.range = icfg.getliteral(fname, 'Q-range', [])
+        if len(self.range) > 0:
+            self.range = self.range[0]
+
+        # Pyramids sub-division
+        self.pyr_div = self.order + 2
+
     def _get_eles(self):
         if len(self.box) > 0:
             eles = self._box_region()
@@ -71,7 +79,36 @@ class Q_criterion(Gradient):
         time = self.get_time_series_mpi(rank, size)
         for t in time:
             print(t)
-            self._proc_soln(t, eles, mesh)
+            Q = self._proc_soln(t, eles, mesh)
+            if len(self.range) > 0:
+                # If Q value is determined
+                reduc = self.determin_Q_range(Q, mesh, eles)
+                # Reduce elements related to Q
+                Q = self.reduc_Q(reduc, Q)
+                if t in time[0]:
+                    # Reduce elements related to mesh, only do once for timeseries
+                    mesh = self.reduc_Q(reduc, mesh, True)
+            # Flush to disk
+            self._flash_to_vtk(mesh, Q, t)
+
+    def reduc_Q(self, reduc, var, mesh = False):
+        # Get rid of elements and some ranks
+        # Note here ordering between mesh and solution is different
+        if mesh:
+            return {k: var[k][:, v] for k, v in reduc.items()}
+        else:
+            return {k: var[k][..., v] for k, v in reduc.items()}
+
+    def determin_Q_range(self, Q, mesh, eles):
+        reduc = {}
+        for k, v in Q.items():
+            index = []
+            for id in range(v.shape[-1]):
+                # Identify if contains values we want
+                if np.any((v[:,0,id] >= self.range[0]) & (v[:,0,id] <= self.range[1])):
+                    index.append(id)
+            reduc[k] = index
+        return reduc
 
     def _pre_proc_mesh_local(self, meles, op = False):
         mesh = {}
@@ -97,8 +134,7 @@ class Q_criterion(Gradient):
         Q = {}
         for etype, sln in soln.items():
             Q[etype] = self._proc_Q(etype, mesh[etype], sln)
-
-        self._flash_to_vtk(mesh, Q, time)
+        return Q
 
     def _proc_Q(self, etype, mesh, soln):
         gradu = self._pre_proc_fields_grad(etype, mesh, soln)
@@ -204,7 +240,10 @@ class Q_criterion(Gradient):
         nspts, neles = mesh.shape[:2]
 
         # Sub divison points inside of a standard element
-        svpts = self._get_std_ele(name, nspts, self.order)
+        if name != 'pyr':
+            svpts = self._get_std_ele(name, nspts, self.order)
+        else:
+            svpts = self._get_std_ele(name, nspts, self.pyr_div)
         nsvpts = len(svpts)
 
         #if name != 'pyr' and self.ho_output:
@@ -233,9 +272,9 @@ class Q_criterion(Gradient):
             types = self.vtk_types_ho[name]
         else:
             subdvcls = subclass_where(BaseShapeSubDiv, name=name)
-            nodes = subdvcls.subnodes(self.order)
-            subcellsoff = subdvcls.subcelloffs(self.order)
-            types = subdvcls.subcelltypes(self.order)
+            nodes = subdvcls.subnodes(self.pyr_div)
+            subcellsoff = subdvcls.subcelloffs(self.pyr_div)
+            types = subdvcls.subcelltypes(self.pyr_div)
 
         # Prepare VTU cell arrays
         vtu_con = np.tile(nodes, (neles, 1))
@@ -275,16 +314,14 @@ class Q_criterion(Gradient):
 
         # If a solution has been given the compute the sizes
         if etype == 'pyr':
-            # If not pyr: npts = nnodes = pts_per_cell*nele
-            # If pyr: npts = pts_per_cell*nele, nnodes = len(subdvcls.subnodes(self.etypes_div[etype]))*neles
-            #npts, ncells, nnodes = self._get_npts_ncells_nnodes(sk)
             neles = sk.shape[1]
             shapecls = subclass_where(BaseShape, name=etype)
             subdvcls = subclass_where(BaseShapeSubDiv, name=etype)
-            # Number of vis points
-            npts = shapecls.nspts_from_order(self.order + 1)*neles
-            ncells = len(subdvcls.subcells(self.order))*neles
-            nnodes = len(subdvcls.subnodes(self.order))*neles
+            # Number of vis points for subdivisions
+            npts = shapecls.nspts_from_order(self.pyr_div + 1)*neles
+            # Number of sub cells and nodes
+            ncells = len(subdvcls.subcells(self.pyr_div))*neles
+            nnodes = len(subdvcls.subnodes(self.pyr_div))*neles
 
             nb = npts*dsize
         else:
@@ -292,6 +329,9 @@ class Q_criterion(Gradient):
             nnodes = npts * ncells
             nb = nnodes * dsize
 
+        # 3 dimension of coordinates
+        # 4 is INT32 takes a byte
+        # The last one is offset which is UInt8
         sizes = [3*nb, 4*nnodes, 4*ncells, ncells]
         sizes.extend(len(varnames)*nb for fname, varnames in vvars)
 
@@ -305,8 +345,8 @@ class Q_criterion(Gradient):
             shapecls = subclass_where(BaseShape, name=etype)
             subdvcls = subclass_where(BaseShapeSubDiv, name=etype)
             # Number of sub cells and nodes
-            npts = shapecls.nspts_from_order(self.order + 1)
-            ncells = len(subdvcls.subcells(self.order))*neles
+            npts = shapecls.nspts_from_order(self.pyr_div + 1)
+            ncells = len(subdvcls.subcells(self.pyr_div))*neles
         else:
             ncells = neles
 
